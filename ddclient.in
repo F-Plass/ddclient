@@ -529,6 +529,10 @@ my %variables = (
         'script'      => setv(T_STRING, 0, 1, '/RemoteUpdate.sv', undef),
         'min-error-interval' => setv(T_DELAY, 0, 0, interval('8m'), 0),
     },
+	'servercow-common-defaults'       => {
+    	'server'              => setv(T_FQDNP,  1, 0, 1, 'www.servercow.de', undef),
+		'login'               => setv(T_LOGIN,  0, 0, 0, 'unused',            undef),
+    },
 );
 my %services = (
     'changeip' => {
@@ -835,6 +839,16 @@ my %services = (
             $variables{'dnsexit-common-defaults'},
             $variables{'service-common-defaults'},
         ),
+    },
+    'servercow' => {
+        'updateable' => undef,
+        'update'     => \&nic_servercow_update,
+        'examples'   => \&nic_servercow_examples,
+        'variables'  => merge(
+            { 'server'    => setv(T_FQDNP,  1, 0, 1, 'www.servercow.de', undef)          },
+            $variables{'servercow-common-defaults'},
+			$variables{'service-common-defaults'},
+            ),
     },
 );
 $variables{'merged'} = {
@@ -6558,6 +6572,95 @@ sub nic_gandi_update {
             }
         }
     }
+}
+
+######################################################################
+## nic_servercow_examples
+##
+## written by Frank Plass
+##
+######################################################################
+sub nic_servercow_examples {
+    return <<EoEXAMPLE;
+o 'servercow'
+
+The 'servercow' protocol is used by DNS service offered by https://servercow.de/domain.
+
+Configuration variables applicable to the 'servercow' protocol are:
+  protocol=servercow       ##
+  login=service-login          ## the user name provided by the admin interface
+  password=service-password    ## the password provided by the admin interface
+  fully.qualified.host         ## the host registered with the service.
+
+Example ${program}.conf file entries:
+  ## single host update
+  protocol=servercow,                                      \\
+  login=my-generated-user-name,                            \\
+  password=my-genereated-password                          \\
+  myhost.com
+
+  ## multiple host update to the custom DNS service
+  protocol=servercow,                                      \\
+  login=my-generated-user-name,                            \\
+  password=my-genereated-password                          \\
+  my-toplevel-domain.com,my-other-domain.com
+EoEXAMPLE
+}
+######################################################################
+## nic_servercow_update
+######################################################################
+sub nic_servercow_update {
+  debug("\nnic_servercow_update -------------------");
+
+  ## group hosts with identical attributes together
+  my %groups = group_hosts_by([ @_ ], [ qw(server login password) ]);
+
+  ## update each set of hosts that had similar configurations
+  foreach my $h (@_) {
+    my $ip = delete $config{$h}{'wantip'};
+    info("setting IP address to %s for %s", $ip, $h);
+    verbose("UPDATE:","updating %s", $h);
+
+    # Set the URL that we're going to to update
+    my $url;
+    $url  = "https://$config{$h}{'server'}/dnsupdate/update.php";
+    $url .= "?username=";
+    $url .= $config{$h}{'login'};
+    $url .= "&pass=";
+    $url .= $config{$h}{'password'};
+    $url .= "&hostname=";
+    $url .= $h;
+    if (is_ipv6($ip)) {
+    	$url .= "&ip6addr=$ip";
+    } else {
+        $url .= "&ipaddr=$ip";
+    }
+
+    # Try to get URL
+    my $reply = geturl(opt('proxy'), $url);
+
+    # No response, declare as failed
+    if (!defined($reply) || !$reply) {
+        failed("updating %s: Could not connect to %s.", $h, $config{$h}{'server'});
+        last;
+    }
+    last if !header_ok($h, $reply);
+
+    my @reply = split /\n/, $reply;
+    my $returned = pop(@reply);
+    if ($returned =~ /OK/)
+    {
+            $config{$h}{'ip'}     = $ip;
+            $config{$h}{'mtime'}  = $now;
+            $config{$h}{'status'} = 'good';
+            success("updating %s: good: IP address set to %s", $h, $ip);
+     }
+     else
+     {
+            $config{$h}{'status'} = 'failed';
+            failed("updating %s: Server said: '$returned'", $h);
+     }
+  }
 }
 
 # Execute main() if this file is run as a script or run via PAR (https://metacpan.org/pod/PAR),
